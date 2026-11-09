@@ -146,6 +146,8 @@ const MAX_HISTORY = 20
 interface HistoryEntry {
   dataUrl: string
   empty: boolean
+  /** 这一版画布是否来自“导入图片”；撤销/重做要跟着恢复 */
+  imported: boolean
 }
 
 const history = ref<HistoryEntry[]>([])
@@ -220,7 +222,7 @@ let lastPoint: { x: number; y: number } | null = null
 /** 上一帧食指尖的位置（canvas 内部坐标），手势画线靠它连成线段 */
 let lastGesturePoint: { x: number; y: number } | null = null
 
-onMounted(() => {
+onMounted(async () => {
   // 把导出方法挂到 store 上：useAgent 在 AgentPanel 里跑，拿不到这里的模板 ref。
   // 必须放在下面那个提前 return 之前，否则 canvas 没就绪时桥就断了。
   agent.setSketchExporter(exportSketch)
@@ -237,10 +239,16 @@ onMounted(() => {
 
   agent.setUndoHandler(undo)
   window.addEventListener('keydown', onHistoryKey)
-  saveSnapshot(true)
+
+  // 去档案/设置/首页再回来时，画布组件会重新挂载；从 store 恢复上一版画。
+  // 首次进入且没有草稿时，才保存一张真正的空白画布。
+  await restoreCanvasDraft()
 })
 
 onBeforeUnmount(() => {
+  // 路由跳转前先把当前画布存进 Pinia；这是“跳转不丢画”的最后一道保险，
+  // 覆盖用户刚画完还没来得及触发 pointerup 快照的情况。
+  persistCanvasDraft()
   agent.setSketchExporter(null)
   agent.setStoryCardSaver(null)
   agent.setUndoHandler(null)
@@ -257,7 +265,7 @@ function notifyHistory() {
 }
 
 /** 把当前画布存进历史；empty 用于标记“这是一张空白画布” */
-function saveSnapshot(empty = false) {
+function saveSnapshot(empty = false, imported = agent.importedImageActive) {
   const canvas = canvasEl.value
   if (!canvas) return
 
@@ -272,7 +280,7 @@ function saveSnapshot(empty = false) {
     history.value = history.value.slice(0, historyIndex.value + 1)
   }
 
-  history.value.push({ dataUrl, empty })
+  history.value.push({ dataUrl, empty, imported })
 
   if (history.value.length > MAX_HISTORY) {
     history.value.shift()
@@ -280,6 +288,60 @@ function saveSnapshot(empty = false) {
 
   historyIndex.value = history.value.length - 1
   notifyHistory()
+
+  // 路由跳转时 DrawingCanvas 会卸载；把当前版本交给 Pinia 暂存。
+  agent.setCanvasDraft({
+    dataUrl,
+    empty,
+    importedImageActive: imported,
+    updatedAt: Date.now(),
+  })
+}
+
+/** 离开画室前保存当前画布；不写 localStorage，只保证同一 SPA 会话内不丢。 */
+function persistCanvasDraft() {
+  const canvas = canvasEl.value
+  if (!canvas) return
+
+  agent.setCanvasDraft({
+    dataUrl: canvas.toDataURL('image/png'),
+    empty: !agent.hasSketch,
+    importedImageActive: agent.importedImageActive,
+    updatedAt: Date.now(),
+  })
+}
+
+/** 回到画室时恢复上一版画布；没有草稿才初始化空白历史。 */
+async function restoreCanvasDraft() {
+  const draft = agent.canvasDraft
+  if (!draft) {
+    saveSnapshot(true)
+    return
+  }
+
+  try {
+    const image = await loadImage(draft.dataUrl)
+    const canvas = canvasEl.value
+    if (!canvas || !ctx) return
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(image, 0, 0)
+
+    history.value = [{
+      dataUrl: draft.dataUrl,
+      empty: draft.empty,
+      imported: draft.importedImageActive,
+    }]
+    historyIndex.value = 0
+    notifyHistory()
+
+    agent.setHasSketch(!draft.empty)
+    agent.setImportedImageActive(draft.importedImageActive)
+  }
+  catch (err) {
+    console.warn('[canvas] 画布草稿恢复失败，已从空白开始：', err)
+    saveSnapshot(true)
+  }
 }
 
 /** 当前这一笔结束：只有真的落过墨才保存，避免每次点击都塞一张重复图 */
@@ -316,6 +378,13 @@ function restoreSnapshot(entry: HistoryEntry) {
     lastGesturePoint = null
     pasteError.value = ''
     agent.setHasSketch(!entry.empty)
+    agent.setImportedImageActive(entry.imported)
+    agent.setCanvasDraft({
+      dataUrl: entry.dataUrl,
+      empty: entry.empty,
+      importedImageActive: entry.imported,
+      updatedAt: Date.now(),
+    })
   }
 
   image.src = entry.dataUrl
@@ -377,9 +446,44 @@ const INK_ALPHA_THRESHOLD = 16
  * 注意坐标系：画布的 width/height 属性就是 800×600，绘图坐标也按它算，
  * 没有 devicePixelRatio 缩放，所以包围盒直接用画布像素坐标，不需要换算。
  */
+/** 导入图片 / 彩色画布送模型时的长边上限；比 512 的线稿大，保留照片细节 */
+const COLOR_EXPORT_MAX_SIZE = 1024
+
+/** 导入图片允许的最大文件体积；防止一次把画布和 Pinia 草稿撑爆 */
+const MAX_IMPORT_BYTES = 8 * 1024 * 1024
+
+/**
+ * 把彩色画布（导入的图片）原样送模型。
+ * 和手绘线稿不同：不能裁白边、不能膨胀、不能二值化，否则照片会变成黑白线稿。
+ */
+function exportColorImage(source: HTMLCanvasElement) {
+  const scale = Math.min(
+    1,
+    COLOR_EXPORT_MAX_SIZE / Math.max(source.width, source.height),
+  )
+  const width = Math.max(32, Math.round(source.width * scale))
+  const height = Math.max(32, Math.round(source.height * scale))
+
+  const out = document.createElement('canvas')
+  out.width = width
+  out.height = height
+
+  const outCtx = out.getContext('2d')
+  if (!outCtx) return null
+
+  outCtx.fillStyle = '#fffdf8'
+  outCtx.fillRect(0, 0, width, height)
+  outCtx.drawImage(source, 0, 0, width, height)
+
+  return out.toDataURL('image/jpeg', 0.9)
+}
+
 function exportSketch() {
   const source = canvasEl.value
   if (!source) return null
+
+  // 导入的是照片/插画，保留彩色；只有手绘线稿才走下面的裁边+二值化。
+  if (agent.importedImageActive) return exportColorImage(source)
 
   // 没有笔迹（或像素读不出来）时退回整块画布：导出动作依赖「总能拿到一张图」
   const bbox = findInkBounds(source) ?? { x: 0, y: 0, w: source.width, h: source.height }
@@ -881,6 +985,81 @@ async function pasteGenerated(): Promise<boolean> {
 }
 
 /**
+ * 把本地图片导入画布，作为“从一张图开始”的入口。
+ * 只做缩放居中，不裁切；之后用户可以继续在上面画，也可以直接送 AI。
+ */
+async function importImage(file: File): Promise<boolean> {
+  const canvas = canvasEl.value
+  if (!ctx || !canvas) return false
+
+  if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+    pasteError.value = '只支持 PNG / JPG / WebP 图片'
+    return false
+  }
+
+  if (file.size > MAX_IMPORT_BYTES) {
+    pasteError.value = '图片不能超过 8MB'
+    return false
+  }
+
+  try {
+    const dataUrl = await readFileAsDataUrl(file)
+    const image = await loadImage(dataUrl)
+
+    if (!image.width || !image.height) {
+      pasteError.value = '这张图片没有有效尺寸'
+      return false
+    }
+
+    const scale = Math.min(canvas.width / image.width, canvas.height / image.height)
+    const width = image.width * scale
+    const height = image.height * scale
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = '#fffdf8'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(
+      image,
+      (canvas.width - width) / 2,
+      (canvas.height - height) / 2,
+      width,
+      height,
+    )
+
+    drawing = false
+    strokeDirty = false
+    lastPoint = null
+    lastGesturePoint = null
+    pasteError.value = ''
+
+    // 导入的是彩色图，送模型时不能走手绘线稿的二值化路径。
+    agent.setImportedImageActive(true)
+    agent.markStroke()
+    agent.setCurrentSuggestions([])
+    suggestionDismissed.value = true
+    hideSuggestion()
+    saveSnapshot(false)
+
+    ui.showToast('图片已导入，可以点「让 AI 猜猜」或 👍 生成')
+    return true
+  }
+  catch (err) {
+    console.error('[canvas] 导入图片失败：', err)
+    pasteError.value = `图片导入失败：${(err as Error)?.message ?? '请换一张试试'}`
+    return false
+  }
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
  * 加载图片。
  * 上游给的 https 图直接画进 canvas 会污染画布，之后 toDataURL 会抛安全错误，
  * 所以先 fetch 成 dataURL 再用；跨域不允许时抛错，由调用方提示用户。
@@ -1071,7 +1250,7 @@ function clear() {
   saveSnapshot(true)
 }
 
-defineExpose({ clear, undo, redo, canUndo, canRedo, exportSketch, buildStoryCard, archiveStoryCard, pasteGenerated })
+defineExpose({ clear, undo, redo, canUndo, canRedo, exportSketch, buildStoryCard, archiveStoryCard, pasteGenerated, importImage })
 </script>
 
 <style scoped>

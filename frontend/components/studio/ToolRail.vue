@@ -27,6 +27,37 @@
       </div>
 
       <button
+        type="button"
+        class="flex min-h-11 w-full items-center gap-2.5 rounded-xl border border-line bg-surface px-3 text-left text-sm font-medium text-ink transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/30"
+        title="把一张本地图片放到画布上，再用 AI 变成作品"
+        @click="fileInput?.click()"
+      >
+        <svg
+          class="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <circle cx="8.5" cy="9.5" r="1.5" />
+          <path d="m21 15-5-5L5 20" />
+        </svg>
+        导入图片
+      </button>
+
+      <input
+        ref="fileInput"
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        class="hidden"
+        @change="onImagePicked"
+      >
+
+      <button
         v-if="hasArtwork"
         type="button"
         class="flex min-h-11 w-full items-center gap-2.5 rounded-xl border border-sage/20 bg-sage-soft px-3 text-left text-sm font-medium text-sage-strong transition-colors hover:bg-sage-soft/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/30"
@@ -141,5 +172,15 @@ withDefaults(defineProps<{
   canUndo: false,
   canRedo: false,
 })
-const emit = defineEmits<{ clear: []; view: []; undo: []; redo: [] }>()
+const emit = defineEmits<{ clear: []; view: []; undo: []; redo: []; image: [file: File] }>()
+
+const fileInput = ref<HTMLInputElement | null>(null)
+
+function onImagePicked(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) emit('image', file)
+  // 允许用户连续选择同一张图重试
+  input.value = ''
+}
 </script>

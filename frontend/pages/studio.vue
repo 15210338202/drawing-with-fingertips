@@ -34,6 +34,7 @@
           @view="viewResult"
           @undo="canvasRef?.undo()"
           @redo="canvasRef?.redo()"
+          @image="importImage"
         />
         <CameraDock />
       </div>
@@ -88,6 +89,7 @@ interface CanvasHandle {
   redo: () => boolean
   archiveStoryCard: () => Promise<boolean>
   pasteGenerated: () => Promise<boolean>
+  importImage: (file: File) => Promise<boolean>
 }
 
 const ui = useUIStore()
@@ -121,6 +123,13 @@ async function saveResult() {
 
 function viewResult() {
   if (agent.generatedImage) ui.openResult(agent.generatedImage)
+}
+
+async function importImage(file: File) {
+  const imported = await canvasRef.value?.importImage(file)
+  if (imported === false) {
+    ui.showToast('图片没有导入成功，请换一张试试')
+  }
 }
 
 async function attachResult() {

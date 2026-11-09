@@ -36,6 +36,19 @@ export interface CameraController {
 /** 两个“确认生成”入口：竖大拇指、10 秒空闲邀请 */
 export type GenerationTrigger = 'thumbs-up' | 'idle-suggestion'
 
+/**
+ * 路由跳转时暂存的画布。
+ * 画布组件会随页面卸载，但 Pinia store 不随路由销毁；
+ * 回到画室时用这张图恢复，避免用户去档案/设置一趟就丢掉作品。
+ */
+export interface CanvasDraft {
+  dataUrl: string
+  empty: boolean
+  /** 当前画布是否包含“导入的图片”（决定送模型时走彩色图而不是线稿二值化） */
+  importedImageActive: boolean
+  updatedAt: number
+}
+
 export const useAgentStore = defineStore('agent', {
   state: () => ({
     messages: [] as AgentMessage[],
@@ -82,6 +95,15 @@ export const useAgentStore = defineStore('agent', {
      * DrawingCanvas 落笔时置 true、清空时置 false —— 让 AI 知道是空画布还是已经有草图。
      */
     hasSketch: false,
+
+    /**
+     * 当前画布是否来自“导入图片”。
+     * 为 true 时 exportSketch 发送彩色图；否则仍按手绘线稿做裁边、膨胀、二值化。
+     */
+    importedImageActive: false,
+
+    /** 路由跳转前暂存的画布；只存在内存里，不写入 localStorage */
+    canvasDraft: null as CanvasDraft | null,
 
     /**
      * 最后一次落笔/落墨的时间（毫秒时间戳）。
@@ -162,6 +184,7 @@ export const useAgentStore = defineStore('agent', {
     setHasSketch(v: boolean) {
       this.hasSketch = v
       if (!v) {
+        this.importedImageActive = false
         this.lastStrokeTime = 0
         // 画布清空后，上一张画的风格推荐不再有效，避免新手势继续沿用旧推荐
         this.currentSuggestions = []
@@ -172,6 +195,12 @@ export const useAgentStore = defineStore('agent', {
         // 再说“清空”时被当成确认、直接清掉新画。
         this.pendingClear = false
       }
+    },
+    setImportedImageActive(v: boolean) {
+      this.importedImageActive = v
+    },
+    setCanvasDraft(draft: CanvasDraft | null) {
+      this.canvasDraft = draft
     },
     /**
      * 记录一次新的落墨。
@@ -302,6 +331,9 @@ export const useAgentStore = defineStore('agent', {
       this.lastGeneratedStyleId = ''
       this.currentSuggestions = []
       this.lastSketchBase64 = null
+      this.hasSketch = false
+      this.importedImageActive = false
+      this.canvasDraft = null
       this.lastStrokeTime = 0
       this.isGenerating = false
       this.generationTrigger = null
