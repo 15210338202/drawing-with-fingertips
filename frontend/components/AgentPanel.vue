@@ -47,7 +47,7 @@
            原生识别报 network（Chrome 走 Google 服务）或浏览器不支持时，
            自动切成「录音 → 转 WAV → /api/transcribe」，会提示再说一遍。 -->
       <button
-        v-if="voiceSupported"
+        v-if="voiceAvailable"
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40"
         :class="isActive ? 'animate-pulse bg-danger text-white' : 'bg-surface-2 text-muted hover:bg-line/60'"
         :disabled="busy || handsFreeEnabled"
@@ -188,6 +188,13 @@ const {
   stop: stopVoice,
   reset: resetVoice,
 } = useVoiceInput()
+
+// Web Speech 支持与否只有客户端能判断。先和服务端一样渲染 false，
+// 挂载后再显示麦克风，避免 SSR/客户端节点类型不一致导致 hydration mismatch。
+const voiceAvailable = ref(false)
+onMounted(() => {
+  voiceAvailable.value = voiceSupported.value
+})
 
 // 免提常驻唤醒：识别到「小绘 + 指令」后剥掉唤醒词，直接交给同一套 Agent。
 // 这里不经过 voiceActive/输入框，避免和手动语音的“先说后填”逻辑打架。
