@@ -5,14 +5,14 @@
     :class="ui.archiveFlash
       ? 'border-sage bg-sage-soft text-sage-strong'
       : 'border-line bg-surface text-ink hover:bg-surface-2'"
-    aria-label="打开成长档案"
+    aria-label="打开作品画廊"
   >
     <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <rect x="3" y="5" width="18" height="14" rx="2" />
-      <path d="M3 9h18" />
-      <path d="M8 13h8" />
+      <circle cx="8.5" cy="9.5" r="1.4" />
+      <path d="m21 15-5-5L5 21" />
     </svg>
-    <span class="hidden sm:inline">档案</span>
+    <span class="hidden sm:inline">画廊</span>
     <span
       v-if="ui.archiveFlash"
       class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-sage ring-2 ring-surface"
